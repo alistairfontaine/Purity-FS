@@ -1,0 +1,10 @@
+# Compilation binary artifacts
+purity-fs
+build/
+*.o
+*.out
+
+# System and temporary lock files
+.DS_Store
+*.swp
+*.log
