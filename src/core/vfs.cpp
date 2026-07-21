@@ -251,4 +251,47 @@ void VirtualFilesystem::list_directory() const {
     std::cout << "--------------------------------------------------------" << std::endl;
 }
 
+/**
+ * 🔑 CRYPTOGRAPHIC FILE READ & DECRYPTION PRIMITIVE 🔑
+ * Locates an Inode records mapping snapshot, reads the raw cluster bytes off the host disk,
+ * and passes the payload through the symmetric scramble loop to decrypt it for free.
+ */
+bool VirtualFilesystem::read_file(const std::string& filename, std::vector<char>& out_data) {
+    if (!is_mounted_) return false;
+
+    // 1. Locate the target filename inside the in-memory inode map table cache array
+    const Inode* target_inode = nullptr;
+    for (const auto& entry : inode_table_) {
+        if (std::string(entry.filename) == filename) {
+            target_inode = &entry;
+            break;
+        }
+    }
+
+    if (!target_inode) {
+        std::cerr << "❌ File System Exception: Path target not found: " << filename << std::endl;
+        return false;
+    }
+
+    // 2. Open a direct input file stream to slice the binary segments off your drive partition
+    std::ifstream disk(active_disk_path_, std::ios::binary);
+    if (!disk.is_open()) return false;
+
+    // 3. Compute the exact absolute byte index location matching the file's primary allocation cluster
+    uint32_t cluster_file_position = sb_.root_dir_offset + (32 * sizeof(Inode)) + (target_inode->first_cluster_index * CLUSTER_SIZE);
+    disk.seekg(cluster_file_position, std::ios::beg);
+
+    // 4. Resize our data reception array layout and pull the raw scrambled bytes off disk sectors
+    out_data.resize(target_inode->size_bytes);
+    if (target_inode->size_bytes > 0) {
+        disk.read(out_data.data(), target_inode->size_bytes);
+
+        // 🔒 MILSETONE 3 SYMMETRIC PASS: Run the scrambled bytes through the XOR mask loop to decrypt them completely
+        scramble_buffer(out_data.data(), out_data.size());
+    }
+    disk.close();
+    return true;
+}
+
 } // namespace Purity
+

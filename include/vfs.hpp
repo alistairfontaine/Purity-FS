@@ -50,11 +50,34 @@ public:
     bool format_virtual_disk(const std::string& host_path, uint32_t desired_clusters);
     bool mount_virtual_disk(const std::string& host_path);
 
+    // 📂 Milestone 2 Core Primitives (In-Memory Directory Indexing)
+    bool create_file(const std::string& filename, const std::vector<char>& data);
+    void list_directory() const;
+
+    // 🔑 Milestone 3 Core Primitives (Direct Cryptographic Decryption read)
+    bool read_file(const std::string& filename, std::vector<char>& out_data);
+
+
 private:
     Superblock sb_;
     std::string active_disk_path_;
     bool is_mounted_;
+
+    // 🔒 HIGH-PERFORMANCE ENTRY MATRIX: Runtime RAM cache of virtual filesystem records
+    std::vector<uint32_t> bat_cache_;
+    std::vector<Inode> inode_table_;
+
+    // 🔑 Bedrock Cryptographic Signature Key layout configuration bounds
+    static constexpr uint8_t CRYPTO_KEY[8] = { 0x50, 0x55, 0x52, 0x49, 0x54, 0x59, 0x46, 0x53 }; // "PURITYFS" bit mask
+
+    // Internal structural helper routines
+    int32_t find_free_cluster() const;
+    bool write_back_metadata();
+    bool load_metadata_to_cache(std::ifstream& disk);
+    void scramble_buffer(char* buffer, size_t size) const; // 🔒 FIXED: Dependency-free bit-wise obfuscation loop
 };
+
+
 
 } // namespace Purity
 
