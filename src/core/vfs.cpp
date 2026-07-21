@@ -84,25 +84,158 @@ bool VirtualFilesystem::mount_virtual_disk(const std::string& host_path) {
         return false;
     }
 
-    // Read the opening header block directly off Byte 0 of the host storage stream
     Superblock test_sb;
     disk.read(reinterpret_cast<char*>(&test_sb), sizeof(Superblock));
-    disk.close();
 
-    // Cross-examine the signature token payload fields
     if (test_sb.magic != MAGIC_SIGNATURE) {
         std::cerr << "❌ Signature violation: Invalid or corrupted virtual disk architecture." << std::endl;
+        disk.close();
         return false;
     }
 
-    // Initialize state attributes upon verification
     sb_ = test_sb;
     active_disk_path_ = host_path;
     is_mounted_ = true;
 
     std::cout << "✓ [Disk Mounted] Environment verification passed. Live Clusters Tracked: "
               << sb_.total_clusters << std::endl;
+
+    // 🔒 FIXED: Keep stream open for metadata reading, close it gracefully inside the loader
+    bool success = load_metadata_to_cache(disk);
+    disk.close();
+    return success;
+}
+
+bool VirtualFilesystem::load_metadata_to_cache(std::ifstream& disk) {
+    if (!disk.is_open()) return false;
+
+    disk.seekg(sb_.bat_offset, std::ios::beg);
+    bat_cache_.resize(sb_.total_clusters);
+    disk.read(reinterpret_cast<char*>(bat_cache_.data()), sb_.total_clusters * sizeof(uint32_t));
+
+    disk.seekg(sb_.root_dir_offset, std::ios::beg);
+
+    inode_table_.clear();
+    // 🔒 FIXED: Explicitly declare a clean array buffer size of 32 to avoid stack overflows
+    Inode entries_buffer[32];
+    disk.read(reinterpret_cast<char*>(entries_buffer), 32 * sizeof(Inode));
+
+    for (int i = 0; i < 32; ++i) {
+        if (entries_buffer[i].inode_id != 0 && entries_buffer[i].inode_id != 0xFFFFFFFF) {
+            inode_table_.push_back(entries_buffer[i]);
+        }
+    }
     return true;
+}
+
+/**
+ * 🛠️ SEARCH UTILITY BLOCK PRIMITIVE 🛠️
+ * Scans the in-memory BAT array to find the first un-allocated virtual space cluster.
+ */
+int32_t VirtualFilesystem::find_free_cluster() const {
+    for (uint32_t i = 0; i < bat_cache_.size(); ++i) {
+        if (bat_cache_[i] == 0xFFFFFFFF) return i; // Found free cluster index marker
+    }
+    return -1; // Storage container fully exhausted
+}
+
+/**
+ * 💾 HARD DRIVE SECTOR WRITE-BACK ENGINE 💾
+ * Serializes active in-memory cache configurations directly back onto host disk bytes.
+ */
+bool VirtualFilesystem::write_back_metadata() {
+    std::ofstream disk(active_disk_path_, std::ios::binary | std::ios::in | std::ios::out);
+    if (!disk.is_open()) return false;
+
+    // Flush updated structural BAT allocations back to the system data boundaries
+    disk.seekp(sb_.bat_offset, std::ios::beg);
+    disk.write(reinterpret_cast<const char*>(bat_cache_.data()), bat_cache_.size() * sizeof(uint32_t));
+
+    // Flush virtual entry tree inodes table straight into the directory map
+    disk.seekp(sb_.root_dir_offset, std::ios::beg);
+    for (size_t i = 0; i < 32; ++i) {
+        if (i < inode_table_.size()) {
+            disk.write(reinterpret_cast<const char*>(&inode_table_[i]), sizeof(Inode));
+
+        } else {
+            char empty_inode[sizeof(Inode)];
+            std::memset(empty_inode, 0xFF, sizeof(Inode));
+            disk.write(empty_inode, sizeof(Inode));
+        }
+    }
+    disk.close();
+    return true;
+}
+
+/**
+ * 📝 FILE REGISTRATION INGRESS PRIMITIVE 📝
+ * Allocates sectors, binds a packed data entry tracking node, and serializes raw content.
+ */
+bool VirtualFilesystem::create_file(const std::string& filename, const std::vector<char>& data) {
+    if (!is_mounted_) return false;
+    if (filename.length() >= MAX_FILENAME_LEN) return false;
+
+    int32_t cluster_idx = find_free_cluster();
+    if (cluster_idx == -1) {
+        std::cerr << "❌ Spatial Exception: Purity allocation arrays fully saturated." << std::endl;
+        return false;
+    }
+
+    // 1. Pack fresh structural parameters directly inside our custom metadata tree Inode
+    Inode fresh_file;
+    fresh_file.inode_id = inode_table_.size() + 1;
+    std::strncpy(fresh_file.filename, filename.c_str(), MAX_FILENAME_LEN);
+    fresh_file.size_bytes = data.size();
+    fresh_file.first_cluster_index = cluster_idx;
+    fresh_file.is_directory = 0; // Type identifier: Explicit file data block
+    fresh_file.created_at = std::time(nullptr);
+
+    // 2. Mark this cluster sector as fully occupied inside the BAT map cache index
+    bat_cache_[cluster_idx] = 0xCCCCCCFF; // End-Of-File (EOF) tracking byte marker standard
+
+    // 3. Force stream manipulation write to push the actual contents into the virtual cluster partition
+    std::ofstream disk(active_disk_path_, std::ios::binary | std::ios::in | std::ios::out);
+    if (!disk.is_open()) return false;
+
+    // Calculate the absolute file position byte index location of this virtual cluster
+    // Account for header offset, bat table fields, inode arrays, and cluster sequences
+    uint32_t cluster_file_position = sb_.root_dir_offset + (32 * sizeof(Inode)) + (cluster_idx * CLUSTER_SIZE);
+    disk.seekp(cluster_file_position, std::ios::beg);
+
+    if (!data.empty()) {
+        disk.write(data.data(), data.size());
+    }
+    disk.close();
+
+    // 4. Update the state table caches and write the records back to file bytes
+    inode_table_.push_back(fresh_file);
+    return write_back_metadata();
+}
+
+/**
+ * 🖨️ INTERACTIVE DIRECTORY PRINTER 🖨️
+ * Reads the virtual index map array to list tracked parameters in a clean Unix style format.
+ */
+void VirtualFilesystem::list_directory() const {
+    std::cout << "\n📂 [Purity Index View] Contents of root directory:" << std::endl;
+    std::cout << "--------------------------------------------------------" << std::endl;
+    std::cout << "INODE\tTYPE\tSIZE (BYTES)\tCREATED\t\tNAME" << std::endl;
+    std::cout << "--------------------------------------------------------" << std::endl;
+
+    if (inode_table_.empty()) {
+        std::cout << "[Empty directory index layout]" << std::endl;
+        return;
+    }
+
+    for (const auto& entry : inode_table_) {
+        std::string type_str = entry.is_directory ? "DIR " : "FILE";
+        std::cout << entry.inode_id << "\t"
+                  << type_str << "\t"
+                  << entry.size_bytes << "\t\t"
+                  << entry.created_at << "\t"
+                  << entry.filename << std::endl;
+    }
+    std::cout << "--------------------------------------------------------" << std::endl;
 }
 
 } // namespace Purity
