@@ -198,18 +198,31 @@ bool VirtualFilesystem::create_file(const std::string& filename, const std::vect
     if (!disk.is_open()) return false;
 
     // Calculate the absolute file position byte index location of this virtual cluster
-    // Account for header offset, bat table fields, inode arrays, and cluster sequences
     uint32_t cluster_file_position = sb_.root_dir_offset + (32 * sizeof(Inode)) + (cluster_idx * CLUSTER_SIZE);
     disk.seekp(cluster_file_position, std::ios::beg);
 
     if (!data.empty()) {
-        disk.write(data.data(), data.size());
+        // 🔒 MILESTONE 3 PROTECTION: Scramble data bytes on the fly before serialization
+        std::vector<char> encrypted_payload = data;
+        scramble_buffer(encrypted_payload.data(), encrypted_payload.size());
+        disk.write(encrypted_payload.data(), encrypted_payload.size());
     }
     disk.close();
 
     // 4. Update the state table caches and write the records back to file bytes
     inode_table_.push_back(fresh_file);
     return write_back_metadata();
+}
+
+/**
+ * 🔑 DEEP BEDROCK CRYPTOGRAPHIC BIT-WISE MASK LOOP 🔑
+ * Scrambles input bytes using an repeating XOR matrix pattern derived from "PURITYFS".
+ * Running the exact same byte buffer back through this loop automatically decrypts it.
+ */
+void VirtualFilesystem::scramble_buffer(char* buffer, size_t size) const {
+    for (size_t i = 0; i < size; ++i) {
+        buffer[i] ^= CRYPTO_KEY[i % 8]; // Bit-wise XOR encryption transaction pass
+    }
 }
 
 /**
