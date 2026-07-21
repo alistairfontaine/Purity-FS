@@ -57,6 +57,11 @@ public:
     // 🔑 Milestone 3 Core Primitives (Direct Cryptographic Decryption read)
     bool read_file(const std::string& filename, std::vector<char>& out_data);
 
+    // 🚀 VERSION 1.0 PRODUCTION PRIMITIVES (Import/Export Bridges & Chaining)
+    bool import_host_file(const std::string& host_source_path, const std::string& vfs_dest_name);
+    bool export_to_host(const std::string& vfs_source_name, const std::string& host_dest_path);
+
+
 
 private:
     Superblock sb_;

@@ -175,60 +175,77 @@ bool VirtualFilesystem::create_file(const std::string& filename, const std::vect
     if (!is_mounted_) return false;
     if (filename.length() >= MAX_FILENAME_LEN) return false;
 
-    int32_t cluster_idx = find_free_cluster();
-    if (cluster_idx == -1) {
-        std::cerr << "❌ Spatial Exception: Purity allocation arrays fully saturated." << std::endl;
+    // Calculate how many 4KB clusters this file actually needs to occupy
+    size_t bytes_left = data.size();
+    uint32_t clusters_needed = (bytes_left + CLUSTER_SIZE - 1) / CLUSTER_SIZE;
+    if (clusters_needed == 0) clusters_needed = 1; // Always allocate at least 1 block
+
+    std::vector<uint32_t> allocated_chain;
+
+    // 1. Scan the active BAT map to secure all required cluster slots upfront
+    for (uint32_t i = 0; i < sb_.total_clusters; ++i) {
+        if (bat_cache_[i] == 0xFFFFFFFF) {
+            allocated_chain.push_back(i);
+            if (allocated_chain.size() == clusters_needed) break;
+        }
+    }
+
+    if (allocated_chain.size() < clusters_needed) {
+        std::cerr << "❌ Spatial Exception: Not enough free cluster chains available inside .purity disk." << std::endl;
         return false;
     }
 
-    // 1. Pack fresh structural parameters directly inside our custom metadata tree Inode
+    // 2. Set up our Inode record parameters pointing to the first block in the chain
     Inode fresh_file;
     fresh_file.inode_id = inode_table_.size() + 1;
     std::strncpy(fresh_file.filename, filename.c_str(), MAX_FILENAME_LEN);
     fresh_file.size_bytes = data.size();
-    fresh_file.first_cluster_index = cluster_idx;
-    fresh_file.is_directory = 0; // Type identifier: Explicit file data block
+    fresh_file.first_cluster_index = allocated_chain[0];
+    fresh_file.is_directory = 0;
     fresh_file.created_at = std::time(nullptr);
 
-    // 2. Mark this cluster sector as fully occupied inside the BAT map cache index
-    bat_cache_[cluster_idx] = 0xCCCCCCFF; // End-Of-File (EOF) tracking byte marker standard
-
-    // 3. Force stream manipulation write to push the actual contents into the virtual cluster partition
+    // 3. Open our binary disk stream to partition out the data blocks
     std::ofstream disk(active_disk_path_, std::ios::binary | std::ios::in | std::ios::out);
     if (!disk.is_open()) return false;
 
-    // Calculate the absolute file position byte index location of this virtual cluster
-    uint32_t cluster_file_position = sb_.root_dir_offset + (32 * sizeof(Inode)) + (cluster_idx * CLUSTER_SIZE);
-    disk.seekp(cluster_file_position, std::ios::beg);
+    const char* data_ptr = data.data();
 
-    if (!data.empty()) {
-        // 🔒 MILESTONE 3 PROTECTION: Scramble data bytes on the fly before serialization
-        std::vector<char> encrypted_payload = data;
-        scramble_buffer(encrypted_payload.data(), encrypted_payload.size());
-        disk.write(encrypted_payload.data(), encrypted_payload.size());
+    // 4. Slice data across the chained clusters and update the local BAT index
+    for (size_t i = 0; i < allocated_chain.size(); ++i) {
+        uint32_t curr_cluster = allocated_chain[i];
+
+        // Map the linked-list pointers inside the Block Allocation Table
+        if (i == allocated_chain.size() - 1) {
+            bat_cache_[curr_cluster] = 0xCCCCCCFF; // EOF tracking byte marker token
+        } else {
+            bat_cache_[curr_cluster] = allocated_chain[i + 1]; // Points to next sequential sector block
+        }
+
+        // Compute the absolute position of the target sector cluster block on disk
+        uint32_t cluster_file_position = sb_.root_dir_offset + (32 * sizeof(Inode)) + (curr_cluster * CLUSTER_SIZE);
+        disk.seekp(cluster_file_position, std::ios::beg);
+
+        size_t write_size = (bytes_left > CLUSTER_SIZE) ? CLUSTER_SIZE : bytes_left;
+        if (write_size > 0) {
+            std::vector<char> encrypted_block(data_ptr, data_ptr + write_size);
+            scramble_buffer(encrypted_block.data(), encrypted_block.size());
+            disk.write(encrypted_block.data(), write_size);
+            data_ptr += write_size;
+            bytes_left -= write_size;
+        }
     }
     disk.close();
 
-    // 4. Update the state table caches and write the records back to file bytes
     inode_table_.push_back(fresh_file);
     return write_back_metadata();
 }
 
-/**
- * 🔑 DEEP BEDROCK CRYPTOGRAPHIC BIT-WISE MASK LOOP 🔑
- * Scrambles input bytes using an repeating XOR matrix pattern derived from "PURITYFS".
- * Running the exact same byte buffer back through this loop automatically decrypts it.
- */
 void VirtualFilesystem::scramble_buffer(char* buffer, size_t size) const {
     for (size_t i = 0; i < size; ++i) {
-        buffer[i] ^= CRYPTO_KEY[i % 8]; // Bit-wise XOR encryption transaction pass
+        buffer[i] ^= CRYPTO_KEY[i % 8];
     }
 }
 
-/**
- * 🖨️ INTERACTIVE DIRECTORY PRINTER 🖨️
- * Reads the virtual index map array to list tracked parameters in a clean Unix style format.
- */
 void VirtualFilesystem::list_directory() const {
     std::cout << "\n📂 [Purity Index View] Contents of root directory:" << std::endl;
     std::cout << "--------------------------------------------------------" << std::endl;
@@ -251,15 +268,9 @@ void VirtualFilesystem::list_directory() const {
     std::cout << "--------------------------------------------------------" << std::endl;
 }
 
-/**
- * 🔑 CRYPTOGRAPHIC FILE READ & DECRYPTION PRIMITIVE 🔑
- * Locates an Inode records mapping snapshot, reads the raw cluster bytes off the host disk,
- * and passes the payload through the symmetric scramble loop to decrypt it for free.
- */
 bool VirtualFilesystem::read_file(const std::string& filename, std::vector<char>& out_data) {
     if (!is_mounted_) return false;
 
-    // 1. Locate the target filename inside the in-memory inode map table cache array
     const Inode* target_inode = nullptr;
     for (const auto& entry : inode_table_) {
         if (std::string(entry.filename) == filename) {
@@ -273,25 +284,86 @@ bool VirtualFilesystem::read_file(const std::string& filename, std::vector<char>
         return false;
     }
 
-    // 2. Open a direct input file stream to slice the binary segments off your drive partition
     std::ifstream disk(active_disk_path_, std::ios::binary);
     if (!disk.is_open()) return false;
 
-    // 3. Compute the exact absolute byte index location matching the file's primary allocation cluster
-    uint32_t cluster_file_position = sb_.root_dir_offset + (32 * sizeof(Inode)) + (target_inode->first_cluster_index * CLUSTER_SIZE);
-    disk.seekg(cluster_file_position, std::ios::beg);
+    out_data.clear();
+    out_data.reserve(target_inode->size_bytes);
 
-    // 4. Resize our data reception array layout and pull the raw scrambled bytes off disk sectors
-    out_data.resize(target_inode->size_bytes);
-    if (target_inode->size_bytes > 0) {
-        disk.read(out_data.data(), target_inode->size_bytes);
+    uint32_t curr_cluster = target_inode->first_cluster_index;
+    size_t total_bytes_to_read = target_inode->size_bytes;
 
-        // 🔒 MILSETONE 3 SYMMETRIC PASS: Run the scrambled bytes through the XOR mask loop to decrypt them completely
-        scramble_buffer(out_data.data(), out_data.size());
+    // 🔒 TRAVERSE THE LINKED-LIST BAT CHAIN SECURELY ON READ LOOPS
+    while (curr_cluster != 0xCCCCCCFF && curr_cluster < bat_cache_.size() && total_bytes_to_read > 0) {
+        uint32_t cluster_file_position = sb_.root_dir_offset + (32 * sizeof(Inode)) + (curr_cluster * CLUSTER_SIZE);
+        disk.seekg(cluster_file_position, std::ios::beg);
+
+        size_t read_size = (total_bytes_to_read > CLUSTER_SIZE) ? CLUSTER_SIZE : total_bytes_to_read;
+        std::vector<char> cluster_buffer(read_size);
+
+        disk.read(cluster_buffer.data(), read_size);
+        scramble_buffer(cluster_buffer.data(), cluster_buffer.size());
+
+        out_data.insert(out_data.end(), cluster_buffer.begin(), cluster_buffer.end());
+
+        total_bytes_to_read -= read_size;
+        curr_cluster = bat_cache_[curr_cluster]; // Jump to next node pointer block index
     }
+
     disk.close();
     return true;
 }
 
-} // namespace Purity
+/**
+ * 📥 FEATURE 2: NATIVE INTER-OP IMPORT BRIDGE 📥
+ * Extracts raw binary bytes off a real file sitting on your linux disk,
+ * and pushes the payload straight through our cryptographically chained VFS sectors.
+ */
+bool VirtualFilesystem::import_host_file(const std::string& host_source_path, const std::string& vfs_dest_name) {
+    std::ifstream host_file(host_source_path, std::ios::binary | std::ios::ate);
+    if (!host_file.is_open()) {
+        std::cerr << "❌ Import error: Failed to reach host operating file target." << std::endl;
+        return false;
+    }
 
+    std::streamsize size = host_file.tellg();
+    host_file.seekg(0, std::ios::beg);
+
+    std::vector<char> file_buffer(size);
+    if (size > 0) {
+        host_file.read(file_buffer.data(), size);
+    }
+    host_file.close();
+
+    std::cout << "📥 [Import Bridge] Slicing and writing " << size << " bytes into VFS container..." << std::endl;
+    return create_file(vfs_dest_name, file_buffer);
+}
+
+/**
+ * 📤 FEATURE 2: NATIVE INTER-OP EXPORT BRIDGE 📤
+ * Traverses our virtual block chains, unscrambles the bytes on the fly,
+ * and writes a real, fully accessible file back onto your local PC hard drive.
+ */
+bool VirtualFilesystem::export_to_host(const std::string& vfs_source_name, const std::string& host_dest_path) {
+    std::vector<char> data_buffer;
+    if (!read_file(vfs_source_name, data_buffer)) {
+        std::cerr << "❌ Export error: Target file extraction failed inside VFS." << std::endl;
+        return false;
+    }
+
+    std::ofstream host_file(host_dest_path, std::ios::binary | std::ios::trunc);
+    if (!host_file.is_open()) {
+        std::cerr << "❌ Export error: Failed to instantiate target file container on host drive." << std::endl;
+        return false;
+    }
+
+    if (!data_buffer.empty()) {
+        host_file.write(data_buffer.data(), data_buffer.size());
+    }
+    host_file.close();
+
+    std::cout << "📤 [Export Bridge] Extraction success! File exported straight onto your machine disk layout at: " << host_dest_path << std::endl;
+    return true;
+}
+
+} // namespace Purity

@@ -87,6 +87,20 @@ void launch_interactive_shell(VirtualFilesystem& fs) {
                 std::cout << "📖 [Decrypted Content Output]:\n" << decrypted_text << std::endl;
             }
         }
+        else if (command == "import") {
+            if (args.size() < 2) {
+                std::cerr << "⚠️ Usage error: import <host_source_path> <vfs_destination_name>" << std::endl;
+                continue;
+            }
+            fs.import_host_file(args[0], args[1]);
+        }
+        else if (command == "export") {
+            if (args.size() < 2) {
+                std::cerr << "⚠️ Usage error: export <vfs_source_name> <host_destination_path>" << std::endl;
+                continue;
+            }
+            fs.export_to_host(args[0], args[1]);
+        }
         else {
             std::cerr << "❌ Unknown primitive: Type 'help' to review command directory patterns." << std::endl;
         }
