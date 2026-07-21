@@ -8,7 +8,7 @@ An advanced, dependency-free Virtual Filesystem (VFS) and Cryptographic Storage 
 
 ## 🔬 System Attributes
 * **Zero Dependency Bloat:** Compiled straight to bare-metal using only standard C++ system libraries (`<fstream>`, `<vector>`, `<memory>`).
-* **Binary Serialization:** Operates entirely within a single high-performance static host disk chunk file.
+* **Binary Serialization:** Operates entirely within a single high-performance static host disk layout container file utilizing our sovereign `.purity` file format.
 * **On-Chain Cryptography:** Implements a direct custom bit-shifting cluster obfuscation matrix loop.
 * **Interactive CLI Shell Loop:** Natively processes terminal instructions (`vfs_mkdir`, `vfs_import`, `vfs_export`) via isolated shell scripts.
 
