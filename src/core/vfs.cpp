@@ -6,9 +6,10 @@
 
 namespace Purity {
 
-VirtualFilesystem::VirtualFilesystem() : is_mounted_(false) {
+VirtualFilesystem::VirtualFilesystem() : is_mounted_(false), current_working_directory_("/") {
     std::memset(&sb_, 0, sizeof(Superblock));
 }
+
 
 VirtualFilesystem::~VirtualFilesystem() {
     // Graceful release loop
@@ -247,26 +248,54 @@ void VirtualFilesystem::scramble_buffer(char* buffer, size_t size) const {
 }
 
 void VirtualFilesystem::list_directory() const {
-    std::cout << "\n📂 [Purity Index View] Contents of root directory:" << std::endl;
+    std::cout << "\n📂 [Purity Index View] Contents of directory: " << current_working_directory_ << std::endl;
     std::cout << "--------------------------------------------------------" << std::endl;
     std::cout << "INODE\tTYPE\tSIZE (BYTES)\tCREATED\t\tNAME" << std::endl;
     std::cout << "--------------------------------------------------------" << std::endl;
 
-    if (inode_table_.empty()) {
-        std::cout << "[Empty directory index layout]" << std::endl;
-        return;
+    uint32_t listed_count = 0;
+    for (const auto& entry : inode_table_) {
+        std::string full_name(entry.filename);
+
+        // 🔒 DIRECTORY PREFIX FILTER: Determine if item sits inside active path tree
+        bool matches_dir = false;
+        if (current_working_directory_ == "/") {
+            // Root checks: file cannot contain nested forward slashes
+            matches_dir = (full_name.find_first_of('/') == std::string::npos);
+        } else {
+            // Nested checks: item must append directly onto the active path prefix string
+            std::string prefix = current_working_directory_.substr(1) + "/";
+            if (full_name.find(prefix) == 0) {
+                std::string remainder = full_name.substr(prefix.length());
+                matches_dir = (remainder.find_first_of('/') == std::string::npos);
+            }
+        }
+
+        if (matches_dir) {
+            listed_count++;
+            std::string type_str = entry.is_directory ? "DIR " : "FILE";
+
+            // Clean filename text string mapping to remove upper path components during viewing
+            std::string clean_display_name = full_name;
+            size_t last_slash = full_name.find_last_of('/');
+            if (last_slash != std::string::npos) {
+                clean_display_name = full_name.substr(last_slash + 1);
+            }
+
+            std::cout << entry.inode_id << "\t"
+                      << type_str << "\t"
+                      << entry.size_bytes << "\t\t"
+                      << entry.created_at << "\t"
+                      << clean_display_name << std::endl;
+        }
     }
 
-    for (const auto& entry : inode_table_) {
-        std::string type_str = entry.is_directory ? "DIR " : "FILE";
-        std::cout << entry.inode_id << "\t"
-                  << type_str << "\t"
-                  << entry.size_bytes << "\t\t"
-                  << entry.created_at << "\t"
-                  << entry.filename << std::endl;
+    if (listed_count == 0) {
+        std::cout << "[Empty folder directory container]" << std::endl;
     }
     std::cout << "--------------------------------------------------------" << std::endl;
 }
+
 
 bool VirtualFilesystem::read_file(const std::string& filename, std::vector<char>& out_data) {
     if (!is_mounted_) return false;
@@ -366,4 +395,83 @@ bool VirtualFilesystem::export_to_host(const std::string& vfs_source_name, const
     return true;
 }
 
+/**
+ * 📂 FEATURE 3: VIRTUAL DIRECTORY ALLOCATION ALLOCATOR 📂
+ * Registers a new packed directory record mapping inside the Inode metadata tree.
+ */
+bool VirtualFilesystem::create_directory(const std::string& dirname) {
+    if (!is_mounted_ || dirname.empty()) return false;
+
+    // Build absolute path string token dependencies based on the active path layer
+    std::string absolute_dir_path = (current_working_directory_ == "/")
+        ? dirname
+        : (current_working_directory_.substr(1) + "/" + dirname);
+
+    if (absolute_dir_path.length() >= MAX_FILENAME_LEN) return false;
+
+    int32_t cluster_idx = find_free_cluster();
+    if (cluster_idx == -1) return false;
+
+    Inode fresh_dir;
+    fresh_dir.inode_id = inode_table_.size() + 1;
+    std::strncpy(fresh_dir.filename, absolute_dir_path.c_str(), MAX_FILENAME_LEN);
+    fresh_dir.size_bytes = 0; // Folder directory metadata structures occupy 0 file data bytes
+    fresh_dir.first_cluster_index = cluster_idx;
+    fresh_dir.is_directory = 1; // 🔒 DISCRIMINATOR KEY FLAG MARKED AS DIRECTORY LAYER
+    fresh_dir.created_at = std::time(nullptr);
+
+    // Secure sector mapping tracks inside the active block table map cache
+    bat_cache_[cluster_idx] = 0xCCCCCCFF;
+
+    inode_table_.push_back(fresh_dir);
+    return write_back_metadata();
+}
+
+/**
+ * 🚶 FEATURE 3: DYNAMIC PATH TRAVERSER NAVIGATION ENGINE 🚶
+ * Updates the runtime state parameters to jump across virtual directory levels.
+ */
+bool VirtualFilesystem::change_directory(const std::string& target_path) {
+    if (!is_mounted_) return false;
+
+    if (target_path == "..") {
+        if (current_working_directory_ == "/") return true; // Already anchored at system root
+        size_t last_slash = current_working_directory_.find_last_of('/');
+        if (last_slash == 0) {
+            current_working_directory_ = "/";
+        } else {
+            current_working_directory_ = current_working_directory_.substr(0, last_slash);
+        }
+        return true;
+    }
+
+    if (target_path == "/") {
+        current_working_directory_ = "/";
+        return true;
+    }
+
+    // Traverse into a nested folder sector block
+    std::string look_for = (current_working_directory_ == "/")
+        ? target_path
+        : (current_working_directory_.substr(1) + "/" + target_path);
+
+    // Cross-examine records to prove that this folder directory genuinely exists on-chain
+    bool found = false;
+    for (const auto& entry : inode_table_) {
+        if (std::string(entry.filename) == look_for && entry.is_directory == 1) {
+            found = true;
+            break;
+        }
+    }
+
+    if (!found) {
+        std::cerr << "❌ Path Exception: Directory folder not found: " << target_path << std::endl;
+        return false;
+    }
+
+    current_working_directory_ = (current_working_directory_ == "/") ? ("/" + target_path) : (current_working_directory_ + "/" + target_path);
+    return true;
+}
+
 } // namespace Purity
+

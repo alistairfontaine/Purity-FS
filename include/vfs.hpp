@@ -61,12 +61,19 @@ public:
     bool import_host_file(const std::string& host_source_path, const std::string& vfs_dest_name);
     bool export_to_host(const std::string& vfs_source_name, const std::string& host_dest_path);
 
+    // 📂 FEATURE 3 PRIMITIVES (Nested Directory Traversal)
+    bool create_directory(const std::string& dirname);
+    bool change_directory(const std::string& target_path);
+    std::string get_pwd() const { return current_working_directory_; }
+
+
 
 
 private:
     Superblock sb_;
     std::string active_disk_path_;
     bool is_mounted_;
+    std::string current_working_directory_; // 🔒 TRACKS LIVE VIRTUAL PATH LOCATION
 
     // 🔒 HIGH-PERFORMANCE ENTRY MATRIX: Runtime RAM cache of virtual filesystem records
     std::vector<uint32_t> bat_cache_;
