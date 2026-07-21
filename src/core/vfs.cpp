@@ -44,7 +44,8 @@ bool VirtualFilesystem::format_virtual_disk(const std::string& host_path, uint32
     // Each entry maps onto a 4-byte cluster pointer key index
     uint32_t bat_size_bytes = desired_clusters * sizeof(uint32_t);
     fresh_sb.root_dir_offset = fresh_sb.bat_offset + bat_size_bytes;
-    fresh_sb.reserved = 0;
+    std::memset(fresh_sb.reserved, 0, sizeof(fresh_sb.reserved));
+
 
     // 2. Commit the physical signature block bytes directly to the start of the host file
     disk.write(reinterpret_cast<const char*>(&fresh_sb), sizeof(Superblock));
