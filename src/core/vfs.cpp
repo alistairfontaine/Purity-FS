@@ -118,10 +118,10 @@ bool VirtualFilesystem::load_metadata_to_cache(std::ifstream& disk) {
 
     inode_table_.clear();
     // 🔒 FIXED: Explicitly declare a clean array buffer size of 32 to avoid stack overflows
-    Inode entries_buffer[32];
-    disk.read(reinterpret_cast<char*>(entries_buffer), 32 * sizeof(Inode));
+    Inode entries_buffer[MAX_DIR_ENTRIES];
+    disk.read(reinterpret_cast<char*>(entries_buffer), MAX_DIR_ENTRIES * sizeof(Inode));
 
-    for (int i = 0; i < 32; ++i) {
+    for (uint32_t i = 0; i < MAX_DIR_ENTRIES; ++i) {
         if (entries_buffer[i].inode_id != 0 && entries_buffer[i].inode_id != 0xFFFFFFFF) {
             inode_table_.push_back(entries_buffer[i]);
         }
@@ -154,7 +154,7 @@ bool VirtualFilesystem::write_back_metadata() {
 
     // Flush virtual entry tree inodes table straight into the directory map
     disk.seekp(sb_.root_dir_offset, std::ios::beg);
-    for (size_t i = 0; i < 32; ++i) {
+    for (uint32_t i = 0; i < MAX_DIR_ENTRIES; ++i) {
         if (i < inode_table_.size()) {
             disk.write(reinterpret_cast<const char*>(&inode_table_[i]), sizeof(Inode));
 
@@ -175,6 +175,16 @@ bool VirtualFilesystem::write_back_metadata() {
 bool VirtualFilesystem::create_file(const std::string& filename, const std::vector<char>& data) {
     if (!is_mounted_) return false;
     if (filename.length() >= MAX_FILENAME_LEN) return false;
+
+    // Reject before allocating anything if the fixed-size root directory is full.
+    // Otherwise we'd consume clusters and return true, but write_back_metadata only
+    // persists the first MAX_DIR_ENTRIES inodes, silently losing the file (and leaking
+    // its clusters) on the next mount.
+    if (inode_table_.size() >= MAX_DIR_ENTRIES) {
+        std::cerr << "\xE2\x9D\x8C Directory Full: root directory is limited to "
+                  << MAX_DIR_ENTRIES << " entries." << std::endl;
+        return false;
+    }
 
     // Calculate how many 4KB clusters this file actually needs to occupy
     size_t bytes_left = data.size();
@@ -408,6 +418,13 @@ bool VirtualFilesystem::create_directory(const std::string& dirname) {
         : (current_working_directory_.substr(1) + "/" + dirname);
 
     if (absolute_dir_path.length() >= MAX_FILENAME_LEN) return false;
+
+    // Same fixed-directory capacity guard as create_file (avoid silent loss on remount).
+    if (inode_table_.size() >= MAX_DIR_ENTRIES) {
+        std::cerr << "\xE2\x9D\x8C Directory Full: root directory is limited to "
+                  << MAX_DIR_ENTRIES << " entries." << std::endl;
+        return false;
+    }
 
     int32_t cluster_idx = find_free_cluster();
     if (cluster_idx == -1) return false;

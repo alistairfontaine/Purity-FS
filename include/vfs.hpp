@@ -11,6 +11,7 @@ namespace Purity {
 constexpr uint32_t CLUSTER_SIZE = 4096;        // 4KB static sector allocation blocks
 constexpr uint32_t MAGIC_SIGNATURE = 0x50555254; // ASCII hex representation for "PURT" (.purity standard)
 constexpr uint32_t MAX_FILENAME_LEN = 64;
+constexpr uint32_t MAX_DIR_ENTRIES  = 32;      // Root directory holds a fixed 32 inode slots
 
 #pragma pack(push, 1) // Force the compiler to pack structs with zero padding byte leakage
 /**
