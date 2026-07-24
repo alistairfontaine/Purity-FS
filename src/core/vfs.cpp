@@ -209,7 +209,8 @@ bool VirtualFilesystem::create_file(const std::string& filename, const std::vect
     // 2. Set up our Inode record parameters pointing to the first block in the chain
     Inode fresh_file;
     fresh_file.inode_id = inode_table_.size() + 1;
-    std::strncpy(fresh_file.filename, filename.c_str(), MAX_FILENAME_LEN);
+    std::strncpy(fresh_file.filename, filename.c_str(), MAX_FILENAME_LEN - 1);
+fresh_file.filename[MAX_FILENAME_LEN - 1] = '\0';
     fresh_file.size_bytes = data.size();
     fresh_file.first_cluster_index = allocated_chain[0];
     fresh_file.is_directory = 0;
@@ -431,7 +432,8 @@ bool VirtualFilesystem::create_directory(const std::string& dirname) {
 
     Inode fresh_dir;
     fresh_dir.inode_id = inode_table_.size() + 1;
-    std::strncpy(fresh_dir.filename, absolute_dir_path.c_str(), MAX_FILENAME_LEN);
+    std::strncpy(fresh_dir.filename, absolute_dir_path.c_str(), MAX_FILENAME_LEN - 1);
+fresh_dir.filename[MAX_FILENAME_LEN - 1] = '\0';
     fresh_dir.size_bytes = 0; // Folder directory metadata structures occupy 0 file data bytes
     fresh_dir.first_cluster_index = cluster_idx;
     fresh_dir.is_directory = 1; // 🔒 DISCRIMINATOR KEY FLAG MARKED AS DIRECTORY LAYER
